@@ -1,5 +1,6 @@
 import os
 import shutil
+import uuid
 from typing import List
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
@@ -15,6 +16,11 @@ router = APIRouter()
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+# File upload constraints
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+ALLOWED_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.webp'}
+ALLOWED_MIME_TYPES = {'image/jpeg', 'image/png', 'image/gif', 'image/webp'}
+
 @router.post("/posts", response_model=PostResponse)
 async def create_post(
     caption: str = Form(None),
@@ -22,29 +28,44 @@ async def create_post(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db)
 ):
-    # Validate image file
-    if not image.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="File must be an image")
+    # Validate file size
+    if image.size > MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="File size too large (max 10MB)")
     
-    # Save image file
-    file_extension = os.path.splitext(image.filename)[1]
-    filename = f"{current_user.id}_{image.filename}"
-    file_path = os.path.join(UPLOAD_DIR, filename)
+    # Validate file type
+    if image.content_type not in ALLOWED_MIME_TYPES:
+        raise HTTPException(status_code=400, detail="Invalid file type. Only JPEG, PNG, GIF, and WebP are allowed")
     
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(image.file, buffer)
+    # Validate file extension
+    file_extension = os.path.splitext(image.filename)[1].lower()
+    if file_extension not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Invalid file extension")
     
-    # Create post in database
-    db_post = Post(
-        user_id=current_user.id,
-        caption=caption,
-        image_url=f"/uploads/{filename}"
-    )
-    db.add(db_post)
-    db.commit()
-    db.refresh(db_post)
+    # Generate secure filename
+    secure_filename = f"{current_user.id}_{uuid.uuid4().hex}{file_extension}"
+    file_path = os.path.join(UPLOAD_DIR, secure_filename)
     
-    return db_post
+    try:
+        # Save image file
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(image.file, buffer)
+        
+        # Create post in database
+        db_post = Post(
+            user_id=current_user.id,
+            caption=caption,
+            image_url=f"/uploads/{secure_filename}"
+        )
+        db.add(db_post)
+        db.commit()
+        db.refresh(db_post)
+        
+        return db_post
+    except Exception as e:
+        # Clean up file if database operation fails
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        raise HTTPException(status_code=500, detail="Failed to create post")
 
 @router.get("/posts", response_model=List[PostResponse])
 def get_posts(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
@@ -76,9 +97,19 @@ def delete_post(
     if post.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not authorized to delete this post")
     
-    # Delete image file
-    if os.path.exists(post.image_url.lstrip("/")):
-        os.remove(post.image_url.lstrip("/"))
+    # Safely delete image file
+    if post.image_url:
+        # Extract filename from URL (remove /uploads/ prefix)
+        filename = post.image_url.replace("/uploads/", "")
+        file_path = os.path.join(UPLOAD_DIR, filename)
+        
+        # Ensure the file path is within the upload directory (prevent path traversal)
+        if os.path.commonpath([UPLOAD_DIR, file_path]) == UPLOAD_DIR and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except OSError:
+                # Log the error but don't fail the deletion
+                pass
     
     db.delete(post)
     db.commit()

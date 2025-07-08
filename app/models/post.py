@@ -14,7 +14,3 @@ class Post(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
     user = relationship("User", back_populates="posts")
-
-# Add back_populates to User model
-from .user import User
-User.posts = relationship("Post", back_populates="user")
