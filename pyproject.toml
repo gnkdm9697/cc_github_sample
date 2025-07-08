@@ -1,7 +1,20 @@
 [project]
 name = "cc-github-sample"
 version = "0.1.0"
-description = "Add your description here"
+description = "Instagram-like SNS backend API server"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "fastapi>=0.104.1",
+    "uvicorn[standard]>=0.24.0",
+    "sqlalchemy>=2.0.23",
+    "alembic>=1.13.0",
+    "python-multipart>=0.0.6",
+    "python-jose[cryptography]>=3.3.0",
+    "passlib[bcrypt]>=1.7.4",
+    "pillow>=10.1.0",
+    "pydantic>=2.5.0",
+    "python-decouple>=3.8",
+    "aiofiles>=23.2.0",
+    "databases[sqlite]>=0.8.0",
+]
