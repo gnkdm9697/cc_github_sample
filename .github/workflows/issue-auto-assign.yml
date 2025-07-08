@@ -1,0 +1,127 @@
+name: Issue自動実装アサインシステム
+
+on:
+  issues:
+    types: [opened, edited, labeled]
+
+jobs:
+  auto-assign-implementation:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 自動実装が必要かチェック
+      id: check-implementation
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const issue = context.payload.issue;
+          const body = issue.body || '';
+          const title = issue.title || '';
+          
+          // 自動実装キーワードをチェック
+          const implementationKeywords = [
+            '実装して', '作って', '追加して', 'implement', 'create', 'add',
+            '機能追加', '新機能', 'feature', 'function'
+          ];
+          
+          const needsImplementation = implementationKeywords.some(keyword => 
+            title.toLowerCase().includes(keyword.toLowerCase()) || 
+            body.toLowerCase().includes(keyword.toLowerCase())
+          );
+          
+          console.log('自動実装が必要:', needsImplementation);
+          return needsImplementation;
+    
+    - name: 自動実装ラベルを追加
+      if: steps.check-implementation.outputs.result == 'true'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          await github.rest.issues.addLabels({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+            labels: ['auto-implement', 'claude-code-ready']
+          });
+    
+    - name: 実装手順のコメントを追加
+      if: steps.check-implementation.outputs.result == 'true'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const comment = `🤖 **自動実装対象のIssueとして検出されました！**
+          
+          このIssueは自動実装の対象として認識されました。
+          
+          ### 実装開始方法
+          
+          **方法1: 自動実装を即座に開始**
+          - 「Run workflow」ボタンから \`Auto Implementation with Claude Code\` を実行
+          - このIssue番号を入力して実行
+          
+          **方法2: 手動でワークフローを起動**
+          \`\`\`bash
+          # GitHub CLIを使用
+          gh workflow run auto-implementation.yml -f issue_number=${{ github.event.issue.number }} -f implementation_type=feature
+          \`\`\`
+          
+          ### 実装プロセス
+          1. 🔄 自動でブランチ作成
+          2. 📝 実装テンプレート生成
+          3. 🧪 基本テスト実行
+          4. 📋 PR自動作成
+          5. 🤖 Claude Codeでの詳細実装
+          
+          ### 実装タイプ
+          - \`feature\`: 新機能追加
+          - \`bugfix\`: バグ修正
+          - \`enhancement\`: 機能強化
+          - \`refactor\`: リファクタリング
+          
+          ---
+          *🤖 自動検出システム - \`auto-implement\`ラベルが追加されました*`;
+          
+          await github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: comment
+          });
+    
+    - name: 実装チェックリストを作成
+      if: steps.check-implementation.outputs.result == 'true'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const checklist = `
+          
+          ---
+          
+          ## 🤖 自動実装チェックリスト
+          
+          - [ ] 自動実装ワークフロー実行
+          - [ ] 実装ブランチ作成
+          - [ ] 基本実装完了
+          - [ ] PR作成
+          - [ ] Claude Codeでの詳細実装
+          - [ ] テスト追加
+          - [ ] コードレビュー
+          - [ ] マージ
+          
+          ### 進捗状況
+          - **ステータス**: 🟡 実装待機中
+          - **担当**: 🤖 GitHub Actions + Claude Code
+          - **予定所要時間**: 10-30分
+          
+          *このチェックリストは自動的に更新されます*`;
+          
+          // 既存のIssueボディに追加
+          const currentBody = context.payload.issue.body || '';
+          const updatedBody = currentBody + checklist;
+          
+          await github.rest.issues.update({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+            body: updatedBody
+          });

@@ -1,0 +1,223 @@
+name: PR自動更新管理システム
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+  pull_request_review:
+    types: [submitted]
+  push:
+    branches: [auto-implement-*]
+
+jobs:
+  pr-management:
+    runs-on: ubuntu-latest
+    if: startsWith(github.head_ref, 'auto-implement-') || contains(github.event.pull_request.labels.*.name, 'auto-implemented')
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Issue番号を抽出
+      id: extract-issue
+      run: |
+        if [[ "${{ github.head_ref }}" =~ auto-implement-([0-9]+) ]]; then
+          echo "issue_number=${BASH_REMATCH[1]}" >> $GITHUB_OUTPUT
+        else
+          echo "issue_number=" >> $GITHUB_OUTPUT
+        fi
+    
+    - name: PRステータスを更新
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const issueNumber = '${{ steps.extract-issue.outputs.issue_number }}';
+          if (!issueNumber) return;
+          
+          // PRの状態を取得
+          const { data: pr } = await github.rest.pulls.get({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            pull_number: context.issue.number
+          });
+          
+          // PRの状態に基づいてIssueを更新
+          let status = '🟡 実装中';
+          let progress = 'Claude Codeでの詳細実装が進行中';
+          
+          if (pr.draft) {
+            status = '🟠 ドラフト';
+            progress = 'ドラフト状態 - 実装継続中';
+          } else if (pr.mergeable_state === 'clean') {
+            status = '🟢 レビュー準備完了';
+            progress = 'マージ可能状態 - レビュー待機中';
+          } else if (pr.mergeable_state === 'unstable') {
+            status = '🟡 チェック実行中';
+            progress = 'CI/CDチェック実行中';
+          } else if (pr.mergeable_state === 'dirty') {
+            status = '🔴 コンフリクト';
+            progress = 'マージコンフリクトが発生 - 解決が必要';
+          }
+          
+          // Issueにコメントを追加
+          await github.rest.issues.createComment({
+            issue_number: parseInt(issueNumber),
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: `🤖 **自動実装PR更新**
+            
+            **PR #${{ github.event.pull_request.number }}** の状態が更新されました
+            
+            **現在のステータス:** ${status}
+            **進捗:** ${progress}
+            
+            ### PR詳細
+            - **ブランチ:** \`${{ github.head_ref }}\`
+            - **コミット数:** ${{ github.event.pull_request.commits }}
+            - **変更ファイル数:** ${{ github.event.pull_request.changed_files }}
+            - **追加行数:** +${{ github.event.pull_request.additions }}
+            - **削除行数:** -${{ github.event.pull_request.deletions }}
+            
+            ### 次のアクション
+            ${pr.draft ? '- ドラフトを解除してレビューを開始' : ''}
+            ${pr.mergeable_state === 'clean' ? '- コードレビューを実施' : ''}
+            ${pr.mergeable_state === 'dirty' ? '- コンフリクトを解決' : ''}
+            ${pr.mergeable_state === 'unstable' ? '- CI/CDの結果を確認' : ''}
+            
+            ---
+            *🤖 自動更新 - ${new Date().toLocaleString('ja-JP', {timeZone: 'Asia/Tokyo'})}*`
+          });
+    
+    - name: 実装進捗をチェック
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const { data: files } = await github.rest.pulls.listFiles({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            pull_number: context.issue.number
+          });
+          
+          // 実装の進捗をチェック
+          const implementedFiles = files.length;
+          const pythonFiles = files.filter(f => f.filename.endsWith('.py')).length;
+          const testFiles = files.filter(f => f.filename.includes('test')).length;
+          const docFiles = files.filter(f => f.filename.endsWith('.md')).length;
+          
+          // 実装完了度を計算
+          let completionScore = 0;
+          if (implementedFiles > 0) completionScore += 20;
+          if (pythonFiles > 0) completionScore += 30;
+          if (testFiles > 0) completionScore += 30;
+          if (docFiles > 0) completionScore += 20;
+          
+          const completionPercentage = Math.min(completionScore, 100);
+          
+          // PRの説明を更新
+          const currentBody = context.payload.pull_request.body || '';
+          const progressSection = `
+          
+          ---
+          
+          ## 🤖 自動実装進捗
+          
+          **完了度:** ${completionPercentage}%
+          
+          ### ファイル変更統計
+          - **実装ファイル:** ${implementedFiles}個
+          - **Pythonファイル:** ${pythonFiles}個
+          - **テストファイル:** ${testFiles}個
+          - **ドキュメント:** ${docFiles}個
+          
+          ### 実装チェックリスト
+          - [${implementedFiles > 0 ? 'x' : ' '}] 基本実装ファイル
+          - [${pythonFiles > 0 ? 'x' : ' '}] Python実装
+          - [${testFiles > 0 ? 'x' : ' '}] テストファイル
+          - [${docFiles > 0 ? 'x' : ' '}] ドキュメント
+          
+          *最終更新: ${new Date().toLocaleString('ja-JP', {timeZone: 'Asia/Tokyo'})}*`;
+          
+          // 既存の進捗セクションを削除して新しいものを追加
+          const updatedBody = currentBody.replace(/---\n\n## 🤖 自動実装進捗[\s\S]*$/, '') + progressSection;
+          
+          await github.rest.pulls.update({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            pull_number: context.issue.number,
+            body: updatedBody
+          });
+    
+    - name: レビューアーを自動アサイン
+      if: github.event.action == 'opened' && !github.event.pull_request.draft
+      uses: actions/github-script@v7
+      with:
+        script: |
+          // 自動実装PRの場合、レビュー担当者を自動アサイン
+          await github.rest.pulls.requestReviewers({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            pull_number: context.issue.number,
+            reviewers: ['${{ github.repository_owner }}'] // リポジトリオーナーをレビューアーに
+          });
+          
+          // レビュー準備完了のコメント
+          await github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: `🤖 **自動実装PR - レビュー準備完了**
+            
+            自動実装が完了し、レビューの準備が整いました。
+            
+            ### レビューポイント
+            - [ ] 実装ロジックの確認
+            - [ ] エラーハンドリングの確認
+            - [ ] テストケースの妥当性
+            - [ ] コードスタイルの確認
+            - [ ] セキュリティの確認
+            
+            ### Claude Codeでの追加作業
+            必要に応じて以下のコマンドで作業を継続できます：
+            \`\`\`bash
+            git checkout ${{ github.head_ref }}
+            claude code : auto-implementation-${{ steps.extract-issue.outputs.issue_number }}
+            \`\`\`
+            
+            ---
+            *🤖 自動レビュー管理システム*`
+          });
+    
+    - name: Issueステータスを更新
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const issueNumber = '${{ steps.extract-issue.outputs.issue_number }}';
+          if (!issueNumber) return;
+          
+          // PRがマージされた場合、Issueをクローズ
+          if (context.payload.pull_request.merged) {
+            await github.rest.issues.createComment({
+              issue_number: parseInt(issueNumber),
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `🎉 **自動実装完了！**
+              
+              PR #${{ github.event.pull_request.number }} がマージされ、実装が完了しました。
+              
+              ### 実装結果
+              - **実装時間:** 自動実装による高速実装
+              - **品質:** Claude Codeによる高品質実装
+              - **テスト:** 自動テスト実行済み
+              
+              この Issue は自動的にクローズされます。
+              
+              ---
+              *🤖 自動実装システム - 完了*`
+            });
+            
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: parseInt(issueNumber),
+              state: 'closed'
+            });
+          }
