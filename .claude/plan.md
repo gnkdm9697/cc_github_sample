@@ -1,0 +1,2 @@
+このプロジェクトはinstagramのようなsnsを作成します。
+またgithubactions上でckau
